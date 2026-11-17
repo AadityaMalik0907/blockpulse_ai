@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: blockpulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blockpulse
+      POSTGRES_USER: blockpulse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-blockpulse_dev}
+    ports:
+      - "55432:5432"
+    volumes:
+      - blockpulse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blockpulse -d blockpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: blockpulse-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://blockpulse:${POSTGRES_PASSWORD:-blockpulse_dev}@db:5432/blockpulse
+      REQUIRE_DATABASE: "true"
+      DB_SSL: "false"
+      PG_POOL_SIZE: ${PG_POOL_SIZE:-8}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
+      AI_REQUESTS_PER_MINUTE: ${AI_REQUESTS_PER_MINUTE:-6}
+      MEMPOOL_API_BASE: ${MEMPOOL_API_BASE:-https://mempool.space/api}
+      MEMPOOL_TIMEOUT_MS: ${MEMPOOL_TIMEOUT_MS:-10000}
+      REFRESH_INTERVAL_MS: ${REFRESH_INTERVAL_MS:-20000}
+    ports:
+      - "4000:4000"
+
+volumes:
+  blockpulse_pgdata:
