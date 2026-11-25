@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchDashboardSnapshot, fetchMempoolJson, searchBlockchain } from './services/mempool.js';
 import { AnomalyEngine } from './services/anomaly.js';
-import { generateNetworkInsight, getGeminiConfig } from './services/ai.js';
+import { generateNetworkInsight, getAIConfig } from './services/ai.js';
 import { createDatabase } from './db/database.js';
 
 const app = express();
@@ -138,7 +138,7 @@ app.get('/api/health', async (_request, response) => {
       }
     }
   }
-  const gemini = getGeminiConfig();
+  const ai = getAIConfig();
   response.json({
     status: latestSnapshot ? 'ok' : 'degraded',
     service: 'blockpulse-api',
@@ -147,7 +147,7 @@ app.get('/api/health', async (_request, response) => {
     lastUpdated: latestSnapshot?.fetchedAt || null,
     lastRefreshError,
     database: { configured: Boolean(database), status: databaseStatus, error: databaseError },
-    ai: { provider: gemini.provider, model: gemini.model, configured: gemini.configured },
+    ai,
     anomalyEngine: latestAnomalyReport ? {
       baselineSamples: latestAnomalyReport.baseline.transactionSamples,
       alerts: latestAnomalyReport.summary.totalAlerts,
@@ -217,13 +217,15 @@ app.get('/api/search/:query', async (request, response, next) => {
 });
 
 app.get('/api/ai/status', (_request, response) => {
-  const config = getGeminiConfig();
+  const config = getAIConfig();
   response.json({
     ...config,
     enabled: config.configured,
     message: config.configured
-      ? 'Gemini is configured and ready to generate network analysis.'
-      : 'Add GEMINI_API_KEY to the server .env file to enable AI-generated analysis.',
+      ? config.providers.openai
+        ? 'AI insight generation is configured. OpenAI is tried first; Gemini is used as fallback when configured.'
+        : 'AI insight generation is configured with Gemini.'
+      : 'Add OPENAI_API_KEY or GEMINI_API_KEY to the server .env file to enable AI-generated analysis.',
   });
 });
 

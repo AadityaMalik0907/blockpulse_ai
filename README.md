@@ -1,6 +1,6 @@
 # BlockPulse AI — Final Prototype
 
-A full-stack Bitcoin mainnet monitoring prototype with a React dashboard, Express API, live mempool.space data, a transparent anomaly detector, Gemini-assisted network analysis, and PostgreSQL persistence.
+A full-stack Bitcoin mainnet monitoring prototype with a React dashboard, Express API, live mempool.space data, a transparent anomaly detector, AI-assisted network analysis, and PostgreSQL persistence.
 
 ## Capabilities
 
@@ -8,7 +8,7 @@ A full-stack Bitcoin mainnet monitoring prototype with a React dashboard, Expres
 - Server-Sent Events (SSE) to push refreshed dashboard snapshots to the browser.
 - Blockchain lookup for transaction IDs, block height/hash, and Bitcoin addresses.
 - Hybrid anomaly detection using explicit thresholds, rolling Median Absolute Deviation (MAD) statistics, and approximate transaction-arrival bursts.
-- Gemini Interactions API-generated network briefs and question-based explanations using the latest network snapshot and anomaly evidence.
+- OpenAI-first network briefs with Gemini fallback, using the latest network snapshot and anomaly evidence.
 - PostgreSQL storage for network snapshots, unique transaction observations, anomaly alerts, arrival windows, and AI reports.
 - Dockerfile and Docker Compose stack for a single-origin container deployment with PostgreSQL.
 
@@ -17,7 +17,7 @@ A full-stack Bitcoin mainnet monitoring prototype with a React dashboard, Expres
 - Node.js 22.12+ (22 LTS recommended) and npm.
 - Docker Desktop with Docker Compose for PostgreSQL and/or the full container stack.
 - Internet access for Bitcoin network data.
-- Optional: a Gemini API key from Google AI Studio to enable AI insights.
+- Optional: OpenAI and/or Gemini API keys to enable AI insights. OpenAI is tried first when configured; Gemini is used if OpenAI fails.
 
 ## Option A — Run locally in VS Code (recommended for development)
 
@@ -48,7 +48,7 @@ A full-stack Bitcoin mainnet monitoring prototype with a React dashboard, Expres
    npm install
    ```
 
-5. (Optional but recommended) Open `.env` and set `GEMINI_API_KEY` to your Google AI Studio API key. Leave it blank to run the dashboard, backend, anomaly engine, and database without AI generation.
+5. (Optional but recommended) Set `OPENAI_API_KEY` in `.env` for the primary provider. Set `GEMINI_API_KEY` too to enable automatic fallback. Either key can be used by itself.
 6. Start the frontend and backend together:
 
    ```bash
@@ -62,7 +62,7 @@ The Vite development server proxies `/api` requests to the Express API at `http:
 ## Option B — Run the complete stack with Docker
 
 1. Create `.env` from `.env.example` as shown above.
-2. Add your `GEMINI_API_KEY` to `.env` if AI insights are required.
+2. Add `OPENAI_API_KEY` and optionally `GEMINI_API_KEY` to `.env` if AI insights are required.
 3. Build and start the full application plus PostgreSQL:
 
    ```bash
@@ -85,20 +85,22 @@ To delete the database volume as well (this permanently deletes locally persiste
 docker compose down -v
 ```
 
-## Gemini setup
+## AI provider setup
 
-1. Create an API key in Google AI Studio: https://aistudio.google.com/app/apikey
-2. Add it to the root `.env` file:
+1. Add the OpenAI key to the root `.env` file for the primary provider. Optionally add a Gemini key as backup:
 
    ```env
+   OPENAI_API_KEY=your_openai_api_key
+   OPENAI_MODEL=gpt-5.4-mini
    GEMINI_API_KEY=your_real_key_here
    GEMINI_MODEL=gemini-3.8-flash
    ```
 
-3. Restart the backend (`npm run dev`) or rebuild/restart Docker (`docker compose up --build`).
-4. Open **AI insights** in the sidebar and generate a network brief or ask a question.
+   Create an OpenAI key at https://platform.openai.com/api-keys and a Gemini key at https://aistudio.google.com/app/apikey.
+2. Restart the backend (`npm run dev`) or rebuild/restart Docker (`docker compose up --build`).
+3. Open **AI insights** in the sidebar and generate a network brief or ask a question.
 
-The key is read only by the Express server. AI calls use the Gemini Interactions API with structured JSON output and `store: false`. It is never included in the Vite bundle or sent to the browser. The AI endpoint has a simple per-IP request limit configured by `AI_REQUESTS_PER_MINUTE` (default 6/minute).
+Keys are read only by the Express server and never included in the Vite bundle or sent to the browser. OpenAI is called first with structured output and storage disabled; when it fails, the server tries Gemini if configured. The AI endpoint has a simple per-IP request limit configured by `AI_REQUESTS_PER_MINUTE` (default 6/minute).
 
 ## Configuration
 
@@ -110,6 +112,9 @@ The key is read only by the Express server. AI calls use the Gemini Interactions
 | `DB_SSL` | `false` | Enable TLS for managed PostgreSQL |
 | `DB_SSL_REJECT_UNAUTHORIZED` | `true` | Validate database TLS certificates |
 | `PG_POOL_SIZE` | `8` | PostgreSQL connection pool size |
+| `OPENAI_API_KEY` | empty | Server-side OpenAI API key; primary AI provider |
+| `OPENAI_MODEL` | `gpt-5.4-mini` | OpenAI model identifier |
+| `OPENAI_TIMEOUT_MS` | `30000` | OpenAI request timeout |
 | `GEMINI_API_KEY` | empty | Server-side Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model identifier |
 | `GEMINI_TIMEOUT_MS` | `30000` | AI request timeout |
@@ -135,7 +140,7 @@ npm start         # Express API / production server
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/health` | API, data source, database, and Gemini health/configuration |
+| GET | `/api/health` | API, data source, database, and AI provider health/configuration |
 | GET | `/api/dashboard` | Current normalized Bitcoin snapshot plus anomaly report |
 | GET | `/api/anomalies` | Current detector summary, baseline and alerts |
 | GET | `/api/blocks` | Cached recent blocks |
@@ -143,9 +148,9 @@ npm start         # Express API / production server
 | GET | `/api/search/:query` | Search transaction, block height/hash, or address |
 | GET | `/api/transactions/:txid` | Full transaction detail |
 | GET | `/api/events` | SSE snapshot updates |
-| GET | `/api/ai/status` | Gemini configuration status (never exposes the key) |
+| GET | `/api/ai/status` | AI provider configuration status (never exposes keys) |
 | GET | `/api/ai/insights/recent` | Recent persisted or in-memory AI briefs |
-| POST | `/api/ai/insights` | Generate a Gemini network brief or answer a monitoring question |
+| POST | `/api/ai/insights` | Generate an AI network brief or answer a monitoring question |
 
 Example AI request:
 
@@ -193,7 +198,8 @@ The included Dockerfile is a multi-stage production build. Deploy it to a contai
 - `DATABASE_URL` pointing to a managed PostgreSQL database
 - `REQUIRE_DATABASE=true`
 - `DB_SSL=true` if the managed database requires TLS
-- `GEMINI_API_KEY` and optionally `GEMINI_MODEL`
+- `OPENAI_API_KEY` and optionally `OPENAI_MODEL`
+- Optional Gemini fallback: `GEMINI_API_KEY` and `GEMINI_MODEL`
 - Optional upstream timeout and refresh interval settings
 
 Expose port `4000` and use `/api/health` as the health-check path. Attach a persistent managed PostgreSQL instance; do not rely on the container filesystem for database data. Use a strong database password and keep `.env` out of version control. For a public production service, add authentication, durable distributed rate limiting, secrets management, backups, and monitoring before inviting external users.
@@ -206,7 +212,7 @@ npm test
 npm run build
 ```
 
-The tests use Node's built-in test runner and do not need a Gemini key or PostgreSQL server. A live Gemini request, live mempool connectivity, and database integration require your local credentials and running services.
+The tests use Node's built-in test runner and do not need AI provider keys or PostgreSQL. Live AI requests, mempool connectivity, and database integration require local credentials and running services.
 
 ## Project layout
 

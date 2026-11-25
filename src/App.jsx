@@ -557,12 +557,12 @@ function AIInsights({ snapshot, report }) {
         <div className="ai-hero-copy">
           <div className="section-kicker"><span className="live-pip" /> PHASE 4 / AI ANALYST</div>
           <h2>Turn network signals into clear explanations.</h2>
-          <p>Gemini reviews the latest network snapshot and anomaly evidence, then produces a concise analyst brief with supporting observations and suggested checks.</p>
-          <div className="ai-model-line"><Sparkles size={15} /><span>{status?.provider || 'Google Gemini API'}</span><i /> <span>{status?.model || 'gemini-3.8-flash'}</span></div>
+          <p>AI reviews the latest network snapshot and anomaly evidence, then produces a concise analyst brief with supporting observations and suggested checks.</p>
+          <div className="ai-model-line"><Sparkles size={15} /><span>{status?.provider || 'OpenAI first, Gemini fallback'}</span><i /> <span>{status?.model || 'gpt-5.4-mini'}</span></div>
         </div>
         <div className={`ai-status-card ${status?.configured ? 'ai-status-ready' : 'ai-status-missing'}`}>
           <span className="ai-status-dot" />
-          <div><strong>{status?.configured ? 'Gemini configured' : status ? 'API key required' : 'Checking AI configuration'}</strong><span>{status?.configured ? 'Ready for an on-demand analysis' : 'The API key stays on the backend'}</span></div>
+          <div><strong>{status?.configured ? 'AI providers configured' : status ? 'API key required' : 'Checking AI configuration'}</strong><span>{status?.configured ? status.providers?.openai ? 'OpenAI primary; Gemini fallback when configured' : 'Gemini is the active provider' : 'The API keys stay on the backend'}</span></div>
         </div>
       </section>
 
@@ -576,8 +576,8 @@ function AIInsights({ snapshot, report }) {
       {!status?.configured && status && (
         <section className="ai-config-notice">
           <div className="ai-config-icon"><Settings size={17} /></div>
-          <div><strong>Connect Gemini to enable AI analysis</strong><p>Open your <code>.env</code> file in the project root and add your Google AI Studio key:</p><pre>GEMINI_API_KEY=your_gemini_api_key</pre><span>Then restart the backend. Never put this key in a React environment variable or commit it to Git.</span></div>
-          <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Get API key <ArrowUpRight size={14} /></a>
+          <div><strong>Connect an AI provider to enable analysis</strong><p>Add provider keys to the project root <code>.env</code> file:</p><pre>OPENAI_API_KEY=your_openai_api_key{`\n`}GEMINI_API_KEY=your_gemini_api_key</pre><span>OpenAI is tried first; Gemini is used as fallback. Restart the backend after adding keys. Never put keys in React environment variables or commit them to Git.</span></div>
+          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">Get API key <ArrowUpRight size={14} /></a>
         </section>
       )}
 
@@ -585,7 +585,7 @@ function AIInsights({ snapshot, report }) {
         <div className="panel-heading"><div><div className="section-kicker">ASK THE NETWORK ANALYST</div><h2>Generate an AI network brief</h2><p className="panel-subtitle">The model receives network metrics and up to 8 recent anomaly signals.</p></div><span className="ai-generation-tag"><Sparkles size={13} /> ON DEMAND</span></div>
         <form onSubmit={handleGenerate} className="ai-question-form">
           <textarea value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={500} placeholder="Ask a question, e.g. What should I investigate about the current high-priority signals? Leave this blank for a general network brief." />
-          <div className="ai-form-footer"><span>{question.length}/500 characters · Data is sent to Google Gemini when you generate an insight.</span><button type="submit" className="ai-generate-button" disabled={busy || !status?.configured}>{busy ? <><span className="loading-spinner small-spinner" /> Analyzing...</> : <><Sparkles size={15} /> Generate insight</>}</button></div>
+          <div className="ai-form-footer"><span>{question.length}/500 characters · {status?.providers?.openai ? 'Data goes to OpenAI first, then Gemini only if OpenAI fails.' : 'Data goes to Gemini.'}</span><button type="submit" className="ai-generate-button" disabled={busy || !status?.configured}>{busy ? <><span className="loading-spinner small-spinner" /> Analyzing...</> : <><Sparkles size={15} /> Generate insight</>}</button></div>
         </form>
         {error && <div className="ai-error-message"><AlertTriangle size={15} />{error}</div>}
       </section>

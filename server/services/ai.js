@@ -1,13 +1,56 @@
-const DEFAULT_MODEL = 'gemini-3.8-flash';
-const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 30_000);
+import OpenAI from 'openai';
 
-export function getGeminiConfig() {
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 30_000);
+const GEMINI_OVERLOAD_RETRIES = 2;
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 30_000);
+
+const INSIGHT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    title: { type: 'string' },
+    summary: { type: 'string' },
+    networkState: { type: 'string', enum: ['Calm', 'Elevated', 'Review'] },
+    notableSignals: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string' },
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+          evidence: { type: 'string' },
+          interpretation: { type: 'string' },
+        },
+        required: ['title', 'severity', 'evidence', 'interpretation'],
+      },
+    },
+    recommendedChecks: { type: 'array', items: { type: 'string' } },
+    limitations: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['title', 'summary', 'networkState', 'notableSignals', 'recommendedChecks', 'limitations'],
+};
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function getAIConfig() {
+  const openaiConfigured = Boolean(process.env.OPENAI_API_KEY);
+  const geminiConfigured = Boolean(process.env.GEMINI_API_KEY);
   return {
-    configured: Boolean(process.env.GEMINI_API_KEY),
-    provider: 'Google Gemini API',
-    model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+    configured: openaiConfigured || geminiConfigured,
+    provider: openaiConfigured
+      ? geminiConfigured ? 'OpenAI first, Gemini fallback' : 'OpenAI API'
+      : geminiConfigured ? 'Google Gemini API (fallback-only)' : 'No AI provider configured',
+    model: openaiConfigured ? process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL : process.env.GEMINI_MODEL || DEFAULT_MODEL,
+    providers: { openai: openaiConfigured, gemini: geminiConfigured },
   };
 }
+
+export const getGeminiConfig = getAIConfig;
 
 export function buildInsightContext(snapshot, anomalyReport) {
   const network = snapshot?.network || {};
@@ -99,14 +142,6 @@ export function normalizeInsight(text) {
 }
 
 export async function generateNetworkInsight({ snapshot, anomalyReport, question = '' }) {
-  const { configured, model } = getGeminiConfig();
-  if (!configured) {
-    const error = new Error('Gemini is not configured. Add GEMINI_API_KEY to your server .env file, then restart BlockPulse AI.');
-    error.status = 503;
-    error.code = 'GEMINI_NOT_CONFIGURED';
-    throw error;
-  }
-
   const context = buildInsightContext(snapshot, anomalyReport);
   const analystQuestion = String(question || '').trim().slice(0, 500);
   const systemInstruction = [
@@ -125,100 +160,127 @@ export async function generateNetworkInsight({ snapshot, anomalyReport, question
     analystContext: context,
   });
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-  try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': process.env.GEMINI_API_KEY,
-      },
-      body: JSON.stringify({
+  const { openaiConfigured, geminiConfigured } = {
+    openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+  };
+  if (!openaiConfigured && !geminiConfigured) {
+    const error = new Error('No AI provider is configured. Add OPENAI_API_KEY or GEMINI_API_KEY to the server .env file, then restart BlockPulse AI.');
+    error.status = 503;
+    error.code = 'AI_PROVIDER_NOT_CONFIGURED';
+    throw error;
+  }
+
+  const model = process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+  const failures = [];
+  const resultFor = (responseText, provider, responseModel) => ({
+    ...normalizeInsight(responseText),
+    model: responseModel,
+    provider,
+    generatedAt: new Date().toISOString(),
+    question: analystQuestion,
+    inputSummary: {
+      observedAt: context.observedAt,
+      alertCount: context.anomalySummary.totalAlerts,
+      baselineReady: context.anomalySummary.statisticalBaselineReady,
+    },
+    inputSnapshot: context,
+  });
+
+  if (openaiConfigured) {
+    try {
+      const client = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+        timeout: OPENAI_TIMEOUT_MS,
+        maxRetries: 1,
+      });
+      const response = await client.responses.create({
         model,
-        input: prompt,
-        system_instruction: systemInstruction,
-        store: false,
-        generation_config: { max_output_tokens: 1400 },
-        response_format: {
-          type: 'text',
-          mime_type: 'application/json',
-          schema: {
-            type: 'object',
-            properties: {
-              title: { type: 'string' },
-              summary: { type: 'string' },
-              networkState: { type: 'string', enum: ['Calm', 'Elevated', 'Review'] },
-              notableSignals: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    title: { type: 'string' },
-                    severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
-                    evidence: { type: 'string' },
-                    interpretation: { type: 'string' },
-                  },
-                  required: ['title', 'severity', 'evidence', 'interpretation'],
-                },
-              },
-              recommendedChecks: { type: 'array', items: { type: 'string' } },
-              limitations: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['title', 'summary', 'networkState', 'notableSignals', 'recommendedChecks', 'limitations'],
+        input: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user', content: prompt },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'blockpulse_network_insight',
+            strict: true,
+            schema: INSIGHT_SCHEMA,
           },
         },
-      }),
-      signal: controller.signal,
-    });
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const providerMessage = payload?.error?.message || `Gemini API returned ${response.status}.`;
-      const error = new Error(response.status === 429
-        ? 'Gemini request limit reached. Check your Google AI Studio quota and try again later.'
-        : response.status === 401 || response.status === 403
-          ? 'Gemini rejected the API key. Check GEMINI_API_KEY in your server .env file.'
-          : 'Gemini could not generate an insight right now. Check the server logs and try again.');
-      error.status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 502;
-      error.providerMessage = providerMessage;
-      throw error;
+        max_output_tokens: 1400,
+        store: false,
+      });
+      if (!response.output_text?.trim()) throw new Error('OpenAI returned an empty response.');
+      return resultFor(response.output_text, 'OpenAI API', model);
+    } catch (error) {
+      failures.push(`OpenAI (${model}): ${error.message || 'request failed'}`);
+      console.warn(`[BlockPulse] OpenAI insight request failed; trying Gemini fallback. ${error.message || 'Unknown provider error.'}`);
     }
-
-    const responseText = (payload?.steps || [])
-      .filter((step) => step.type === 'model_output')
-      .flatMap((step) => step.content || [])
-      .filter((part) => part.type === 'text' || typeof part.text === 'string')
-      .map((part) => part.text || '')
-      .join('\n')
-      .trim();
-    if (!responseText) {
-      const error = new Error('Gemini returned no text. Please try again.');
-      error.status = 502;
-      throw error;
-    }
-
-    return {
-      ...normalizeInsight(responseText),
-      model,
-      provider: 'Google Gemini API',
-      generatedAt: new Date().toISOString(),
-      question: analystQuestion,
-      inputSummary: {
-        observedAt: context.observedAt,
-        alertCount: context.anomalySummary.totalAlerts,
-        baselineReady: context.anomalySummary.statisticalBaselineReady,
-      },
-      inputSnapshot: context,
-    };
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      const timeoutError = new Error('Gemini took too long to respond. Please try again.');
-      timeoutError.status = 504;
-      throw timeoutError;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  if (geminiConfigured) {
+    const geminiModel = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    try {
+      let response;
+      let payload;
+      for (let attempt = 0; attempt <= GEMINI_OVERLOAD_RETRIES; attempt += 1) {
+        response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': process.env.GEMINI_API_KEY,
+          },
+          body: JSON.stringify({
+            model: geminiModel,
+            input: prompt,
+            system_instruction: systemInstruction,
+            store: false,
+            generation_config: { max_output_tokens: 1400 },
+            response_format: { type: 'text', mime_type: 'application/json', schema: INSIGHT_SCHEMA },
+          }),
+          signal: controller.signal,
+        });
+        payload = await response.json().catch(() => ({}));
+        if (response.status !== 503 || attempt === GEMINI_OVERLOAD_RETRIES) break;
+        await delay(750 * (2 ** attempt));
+      }
+
+      if (!response.ok) {
+        const providerMessage = payload?.error?.message || `Gemini API returned ${response.status}.`;
+        const fallbackMessage = response.status === 503
+          ? 'Gemini is temporarily overloaded.'
+          : response.status === 429
+            ? 'Gemini rate or quota limit reached.'
+            : response.status === 401 || response.status === 403
+              ? 'Gemini rejected its API key.'
+              : `Gemini returned HTTP ${response.status}.`;
+        failures.push(`Gemini (${geminiModel}): ${fallbackMessage} ${providerMessage}`);
+        throw new Error(fallbackMessage);
+      }
+
+      const responseText = (payload?.steps || [])
+        .filter((step) => step.type === 'model_output')
+        .flatMap((step) => step.content || [])
+        .filter((part) => part.type === 'text' || typeof part.text === 'string')
+        .map((part) => part.text || '')
+        .join('\n')
+        .trim();
+      if (!responseText) throw new Error('Gemini returned an empty response.');
+      return resultFor(responseText, 'Google Gemini API (fallback)', geminiModel);
+    } catch (error) {
+      if (error.name === 'AbortError') failures.push('Gemini timed out.');
+      else if (!failures.some((failure) => failure.includes(error.message))) failures.push(`Gemini: ${error.message || 'request failed'}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const error = new Error(`AI insight generation failed. ${failures.join(' | ')}`);
+  error.status = 502;
+  error.code = 'AI_PROVIDERS_FAILED';
+  error.providerMessage = failures.join(' | ');
+  throw error;
 }
